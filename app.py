@@ -140,26 +140,35 @@ with tab3:
                 items = apify_client.dataset(runs.items[0]['defaultDatasetId']).list_items().items
                 st.success(f"Найдено видео: {len(items)}")
                 
-                # Сетка 3 колонки
                 cols = st.columns(3)
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-
                 for i, item in enumerate(items):
+                    # Берем любую доступную ссылку
                     orig_link = item.get('webVideoUrl') or item.get('videoUrl') or item.get('url')
+                    
                     with cols[i % 3]:
                         with st.container(border=True):
                             st.write(f"**🎥 Видео #{i+1}**")
-                            # Сначала пробуем TikWM
-                            direct = loop.run_until_complete(get_tiktok_mp4(orig_link))
-                            if direct:
-                                st.video(direct)
-                            else:
-                                # Если TikWM подвел, пробуем ссылку из Apify напрямую
-                                fallback = item.get('videoUrl')
-                                if fallback: st.video(fallback)
-                                else: st.info("Плеер заблокирован TikTok")
                             
-                            st.write(f"🔗 [Оригинал в TikTok]({orig_link})")
+                            # Извлекаем ID видео из ссылки для Embed-плеера
+                            video_id = ""
+                            if orig_link:
+                                if "/video/" in orig_link:
+                                    video_id = orig_link.split("/video/")[1].split("?")[0]
+                                elif "v=" in orig_link:
+                                    video_id = orig_link.split("v=")[1].split("&")[0]
+
+                            if video_id:
+                                # Официальный плеер TikTok через HTML
+                                tiktok_embed_code = f"""
+                                <blockquote class="tiktok-embed" data-video-id="{video_id}" style="max-width: 605px;min-value: 325px;">
+                                    <section></section>
+                                </blockquote>
+                                <script async src="https://www.tiktok.com/embed.js"></script>
+                                """
+                                st.components.v1.html(tiktok_embed_code, height=500, scrolling=True)
+                            else:
+                                st.error("Не удалось найти ID")
+                            
+                            st.write(f"🔗 [Открыть в TikTok]({orig_link})")
             else:
                 st.error("Данные скрапера не найдены.")
