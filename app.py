@@ -7,9 +7,9 @@ from apify_client import ApifyClient
 # --- КОНФИГУРАЦИЯ ---
 st.set_page_config(page_title="RH Studio Pro", layout="wide", page_icon="⚡")
 
-# Ключи из твоего бота
-RH_API_KEY = "781fe4abc655454b81ffa8855e4b0849"
-APIFY_TOKEN = "apify_api_ZZn2PnXNgzW9AYlNOUlxg75A4te7C82JT5Cn"
+# Ключи (рекомендую перенести в Secrets на Streamlit Cloud)
+RH_API_KEY = os.environ.get("RH_API_KEY", "781fe4abc655454b81ffa8855e4b0849")
+APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "apify_api_ZZn2PnXNgzW9AYlNOUlxg75A4te7C82JT5Cn")
 SCRAPER_ID = "clockworks/tiktok-scraper"
 APP_ID_V1 = "2044885484895211521"
 APP_ID_V2 = "2044904461180608513"
@@ -48,127 +48,128 @@ async def upload_to_rh(file_bytes, file_name):
         response = await client.post(RH_UPLOAD_URL, headers=headers, files=files)
         return find_key_recursive(response.json(), "download_url")
 
-async def run_and_wait_st(app_id, nodes):
+async def check_task_status(task_id):
     headers = {"Authorization": f"Bearer {RH_API_KEY}", "Content-Type": "application/json"}
-    payload = {"nodeInfoList": nodes, "instanceType": "default"}
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        resp = await client.post(f"{RH_BASE_URL}/run/ai-app/{app_id}", json=payload, headers=headers)
-        task_id = find_key_recursive(resp.json(), "taskId")
-        if not task_id: return None, f"Ошибка запуска: {resp.text}"
-        
-        status_placeholder = st.empty()
-        while True:
-            await asyncio.sleep(8)
-            st_res = await client.post(f"{RH_BASE_URL}/query", json={"taskId": task_id}, headers=headers)
-            status_data = st_res.json()
-            status = find_key_recursive(status_data, "status")
-            status_placeholder.info(f"⏳ Статус: {status} (Task: {task_id})")
-            if status == "SUCCESS": return status_data, None
-            if status in ["FAILED", "CANCELLED"]: return None, f"Workflow {status}"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(f"{RH_BASE_URL}/query", json={"taskId": task_id}, headers=headers)
+        return resp.json()
 
 async def get_tiktok_mp4(url):
-    """Метод из bot.py для получения прямой ссылки"""
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             res = await client.get(f"https://www.tikwm.com/api/?url={url}")
             data = res.json().get("data")
-            if data:
-                play = data.get("play")
-                return play if play.startswith("http") else "https://www.tikwm.com" + play
+            if data: return data.get("play")
     except: return None
 
+# --- ЛОГИКА ВОССТАНОВЛЕНИЯ СЕССИИ ---
+# Проверяем, есть ли ID задачи в URL
+query_params = st.query_params
+active_task = query_params.get("task")
+
 # --- ИНТЕРФЕЙС ---
-tab1, tab2, tab3 = st.tabs(["🎭 V1: DeepFake", "⚡ V2: Universal", "📱 TikTok References"])
+tab1, tab2, tab3 = st.tabs(["🎭 V1: DeepFake", "⚡ V2: Universal", "📱 TikTok Refs"])
+
+# Если задача активна, показываем уведомление вверху
+if active_task:
+    st.sidebar.info(f"🔍 Отслеживаю задачу: {active_task}")
+    if st.sidebar.button("❌ Сбросить отслеживание"):
+        st.query_params.clear()
+        st.rerun()
 
 with tab1:
-    st.header("Воркфлоу V1 (Замена лица)")
+    st.header("Воркфлоу V1 (Face Swap)")
+    
+    # Блок проверки активной задачи
+    if active_task:
+        if st.button("Проверить готовность запущенной задачи", key="check_v1"):
+            with st.spinner("Запрос к RunningHub..."):
+                loop = asyncio.new_event_loop()
+                res = loop.run_until_complete(check_task_status(active_task))
+                status = find_key_recursive(res, "status")
+                if status == "SUCCESS":
+                    st.success("Генерация завершена!")
+                    urls = []
+                    find_media_urls_recursive(res, urls)
+                    for u in urls: st.video(u) if ".mp4" in u.lower() else st.image(u)
+                else:
+                    st.info(f"Текущий статус: {status}. Попробуйте через минуту.")
+        st.divider()
+
     c1, c2 = st.columns(2)
     with c1: v1_vid = st.file_uploader("Видео", type=['mp4','mov'], key="uv1")
     with c2: v1_img = st.file_uploader("Лицо", type=['jpg','png'], key="ui1")
     v1_sec = st.number_input("Длина (сек)", value=5, min_value=1)
-    if st.button("Запустить V1", use_container_width=True):
+    
+    if st.button("🚀 Запустить генерацию", use_container_width=True):
         if v1_vid and v1_img:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            with st.spinner("Генерация..."):
+            with st.spinner("Загрузка файлов и запуск..."):
+                loop = asyncio.new_event_loop()
                 uv = loop.run_until_complete(upload_to_rh(v1_vid.getvalue(), v1_vid.name))
                 uf = loop.run_until_complete(upload_to_rh(v1_img.getvalue(), v1_img.name))
                 nodes = [
                     {"nodeId": "52", "fieldName": "video", "fieldValue": str(uv)},
                     {"nodeId": "167", "fieldName": "image", "fieldValue": str(uf)},
-                    {"nodeId": "439", "fieldName": "value", "fieldValue": str(int(v1_sec)+2)} # Логика из bot.py
+                    {"nodeId": "439", "fieldName": "value", "fieldValue": str(int(v1_sec)+2)}
                 ]
-                res, err = loop.run_until_complete(run_and_wait_st(APP_ID_V1, nodes))
-                if err: st.error(err)
-                else:
-                    urls = []
-                    find_media_urls_recursive(res, urls)
-                    for u in urls:
-                        if ".mp4" in u.lower(): st.video(u)
-                        else: st.image(u)
+                headers = {"Authorization": f"Bearer {RH_API_KEY}", "Content-Type": "application/json"}
+                resp = httpx.post(f"{RH_BASE_URL}/run/ai-app/{APP_ID_V1}", json={"nodeInfoList": nodes}, headers=headers)
+                task_id = find_key_recursive(resp.json(), "taskId")
+                
+                if task_id:
+                    st.query_params.task = task_id # Сохраняем в URL
+                    st.success(f"Задача запущена! ID: {task_id}. Можете закрыть сайт, результат сохранится в ссылке.")
+                    st.rerun()
+                else: st.error("Ошибка запуска")
         else: st.warning("Загрузите файлы!")
 
 with tab2:
-    st.header("Воркфлоу V2")
-    v2_mode = st.radio("Тип:", ["Видео", "Фото"], horizontal=True)
-    v2_file = st.file_uploader(f"Файл {v2_mode}", type=['mp4','mov','jpg','png'], key="uv2")
-    if st.button("Запустить V2", use_container_width=True):
-        if v2_file:
+    st.header("Воркфлоу V2 (Universal)")
+    if active_task:
+        if st.button("Проверить готовность", key="check_v2"):
             loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            with st.spinner("Обработка..."):
+            res = loop.run_until_complete(check_task_status(active_task))
+            status = find_key_recursive(res, "status")
+            if status == "SUCCESS":
+                urls = []
+                find_media_urls_recursive(res, urls)
+                for u in urls: st.video(u) if ".mp4" in u.lower() else st.image(u)
+            else: st.info(f"Статус: {status}")
+        st.divider()
+
+    v2_mode = st.radio("Тип:", ["Видео", "Фото"], horizontal=True)
+    v2_file = st.file_uploader(f"Файл", type=['mp4','mov','jpg','png'], key="uv2")
+    if st.button("🚀 Запустить V2", use_container_width=True):
+        if v2_file:
+            with st.spinner("Запуск..."):
+                loop = asyncio.new_event_loop()
                 url = loop.run_until_complete(upload_to_rh(v2_file.getvalue(), v2_file.name))
                 if v2_mode == "Фото":
                     nodes = [{"nodeId":"529","fieldName":"value","fieldValue":"2"},{"nodeId":"528","fieldName":"image","fieldValue":str(url)}]
                 else:
                     nodes = [{"nodeId":"529","fieldName":"value","fieldValue":"1"},{"nodeId":"517","fieldName":"video","fieldValue":str(url)}]
-                res, err = loop.run_until_complete(run_and_wait_st(APP_ID_V2, nodes))
-                if err: st.error(err)
-                else:
-                    urls = []
-                    find_media_urls_recursive(res, urls)
-                    for u in urls:
-                        if ".mp4" in u.lower(): st.video(u)
-                        else: st.image(u)
+                headers = {"Authorization": f"Bearer {RH_API_KEY}", "Content-Type": "application/json"}
+                resp = httpx.post(f"{RH_BASE_URL}/run/ai-app/{APP_ID_V2}", json={"nodeInfoList": nodes}, headers=headers)
+                task_id = find_key_recursive(resp.json(), "taskId")
+                if task_id:
+                    st.query_params.task = task_id
+                    st.rerun()
 
 with tab3:
-    st.header("📱 Все найденные референсы")
-    if st.button("🔄 Загрузить всё из Apify", use_container_width=True):
-        with st.spinner("Получение данных..."):
+    st.header("📱 Референсы TikTok (No Watermark)")
+    if st.button("🔄 Обновить ленту", use_container_width=True):
+        with st.spinner("Скрапинг..."):
             runs = apify_client.actor(SCRAPER_ID).runs().list(limit=1, desc=True)
             if runs.items:
                 items = apify_client.dataset(runs.items[0]['defaultDatasetId']).list_items().items
-                st.success(f"Найдено видео: {len(items)}")
-                
-                cols = st.columns(3)
+                cols = st.columns(2)
+                loop = asyncio.new_event_loop()
                 for i, item in enumerate(items):
-                    # Берем любую доступную ссылку
-                    orig_link = item.get('webVideoUrl') or item.get('videoUrl') or item.get('url')
-                    
-                    with cols[i % 3]:
+                    orig = item.get('webVideoUrl') or item.get('url')
+                    with cols[i % 2]:
                         with st.container(border=True):
-                            st.write(f"**🎥 Видео #{i+1}**")
-                            
-                            # Извлекаем ID видео из ссылки для Embed-плеера
-                            video_id = ""
-                            if orig_link:
-                                if "/video/" in orig_link:
-                                    video_id = orig_link.split("/video/")[1].split("?")[0]
-                                elif "v=" in orig_link:
-                                    video_id = orig_link.split("v=")[1].split("&")[0]
-
-                            if video_id:
-                                # Официальный плеер TikTok через HTML
-                                tiktok_embed_code = f"""
-                                <blockquote class="tiktok-embed" data-video-id="{video_id}" style="max-width: 605px;min-value: 325px;">
-                                    <section></section>
-                                </blockquote>
-                                <script async src="https://www.tiktok.com/embed.js"></script>
-                                """
-                                st.components.v1.html(tiktok_embed_code, height=500, scrolling=True)
-                            else:
-                                st.error("Не удалось найти ID")
-                            
-                            st.write(f"🔗 [Открыть в TikTok]({orig_link})")
-            else:
-                st.error("Данные скрапера не найдены.")
+                            direct = loop.run_until_complete(get_tiktok_mp4(orig))
+                            if direct:
+                                st.video(direct)
+                                st.markdown(f'<a href="{direct}" target="_blank" style="text-decoration:none;"><div style="background-color:#ff4b4b;color:white;padding:10px;text-align:center;border-radius:5px;">📥 Скачать без вотермарки</div></a>', unsafe_allow_content_html=True)
+                            st.write(f"🔗 [Оригинал]({orig})")
