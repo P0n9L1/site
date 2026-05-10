@@ -7,9 +7,10 @@ from apify_client import ApifyClient
 # --- КОНФИГУРАЦИЯ ---
 st.set_page_config(page_title="RH Studio Pro", layout="wide", page_icon="⚡")
 
-# Ключи (рекомендую перенести в Secrets на Streamlit Cloud)
-RH_API_KEY = os.environ.get("RH_API_KEY", "781fe4abc655454b81ffa8855e4b0849")
-APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "apify_api_ZZn2PnXNgzW9AYlNOUlxg75A4te7C82JT5Cn")
+# Берем ключи из Secrets (безопасный метод)
+RH_API_KEY = st.secrets.get("RH_API_KEY", "781fe4abc655454b81ffa8855e4b0849")
+APIFY_TOKEN = st.secrets.get("APIFY_TOKEN", "apify_api_ZZn2PnXNgzW9AYlNOUlxg75A4te7C82JT5Cn")
+
 SCRAPER_ID = "clockworks/tiktok-scraper"
 APP_ID_V1 = "2044885484895211521"
 APP_ID_V2 = "2044904461180608513"
@@ -51,8 +52,11 @@ async def upload_to_rh(file_bytes, file_name):
 async def check_task_status(task_id):
     headers = {"Authorization": f"Bearer {RH_API_KEY}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(f"{RH_BASE_URL}/query", json={"taskId": task_id}, headers=headers)
-        return resp.json()
+        try:
+            resp = await client.post(f"{RH_BASE_URL}/query", json={"taskId": task_id}, headers=headers)
+            return resp.json()
+        except:
+            return None
 
 async def get_tiktok_mp4(url):
     try:
@@ -63,47 +67,47 @@ async def get_tiktok_mp4(url):
     except: return None
 
 # --- ЛОГИКА ВОССТАНОВЛЕНИЯ СЕССИИ ---
-# Проверяем, есть ли ID задачи в URL
 query_params = st.query_params
 active_task = query_params.get("task")
 
 # --- ИНТЕРФЕЙС ---
 tab1, tab2, tab3 = st.tabs(["🎭 V1: DeepFake", "⚡ V2: Universal", "📱 TikTok Refs"])
 
-# Если задача активна, показываем уведомление вверху
+# Сайдбар для управления активной задачей
 if active_task:
     st.sidebar.info(f"🔍 Отслеживаю задачу: {active_task}")
-    if st.sidebar.button("❌ Сбросить отслеживание"):
+    if st.sidebar.button("❌ Сбросить задачу"):
         st.query_params.clear()
         st.rerun()
 
 with tab1:
     st.header("Воркфлоу V1 (Face Swap)")
     
-    # Блок проверки активной задачи
     if active_task:
-        if st.button("Проверить готовность запущенной задачи", key="check_v1"):
-            with st.spinner("Запрос к RunningHub..."):
+        if st.button("🔄 Проверить готовность", key="check_v1"):
+            with st.spinner("Синхронизация с RunningHub..."):
                 loop = asyncio.new_event_loop()
                 res = loop.run_until_complete(check_task_status(active_task))
                 status = find_key_recursive(res, "status")
                 if status == "SUCCESS":
-                    st.success("Генерация завершена!")
+                    st.success("Готово!")
                     urls = []
                     find_media_urls_recursive(res, urls)
-                    for u in urls: st.video(u) if ".mp4" in u.lower() else st.image(u)
+                    for u in urls: 
+                        if ".mp4" in u.lower(): st.video(u)
+                        else: st.image(u)
                 else:
-                    st.info(f"Текущий статус: {status}. Попробуйте через минуту.")
+                    st.info(f"Статус: {status}. Попробуйте позже.")
         st.divider()
 
     c1, c2 = st.columns(2)
-    with c1: v1_vid = st.file_uploader("Видео", type=['mp4','mov'], key="uv1")
-    with c2: v1_img = st.file_uploader("Лицо", type=['jpg','png'], key="ui1")
-    v1_sec = st.number_input("Длина (сек)", value=5, min_value=1)
+    with c1: v1_vid = st.file_uploader("Видео-основа", type=['mp4','mov'], key="uv1")
+    with c2: v1_img = st.file_uploader("Новое лицо", type=['jpg','png'], key="ui1")
+    v1_sec = st.number_input("Длительность (сек)", value=5, min_value=1)
     
-    if st.button("🚀 Запустить генерацию", use_container_width=True):
+    if st.button("🚀 Запустить V1", use_container_width=True):
         if v1_vid and v1_img:
-            with st.spinner("Загрузка файлов и запуск..."):
+            with st.spinner("Загрузка медиа..."):
                 loop = asyncio.new_event_loop()
                 uv = loop.run_until_complete(upload_to_rh(v1_vid.getvalue(), v1_vid.name))
                 uf = loop.run_until_complete(upload_to_rh(v1_img.getvalue(), v1_img.name))
@@ -117,16 +121,16 @@ with tab1:
                 task_id = find_key_recursive(resp.json(), "taskId")
                 
                 if task_id:
-                    st.query_params.task = task_id # Сохраняем в URL
-                    st.success(f"Задача запущена! ID: {task_id}. Можете закрыть сайт, результат сохранится в ссылке.")
+                    st.query_params.task = task_id
+                    st.success(f"Запущено! ID: {task_id}")
                     st.rerun()
-                else: st.error("Ошибка запуска")
+                else: st.error("Ошибка API RunningHub")
         else: st.warning("Загрузите файлы!")
 
 with tab2:
     st.header("Воркфлоу V2 (Universal)")
     if active_task:
-        if st.button("Проверить готовность", key="check_v2"):
+        if st.button("🔍 Проверить статус V2", key="check_v2"):
             loop = asyncio.new_event_loop()
             res = loop.run_until_complete(check_task_status(active_task))
             status = find_key_recursive(res, "status")
@@ -137,11 +141,11 @@ with tab2:
             else: st.info(f"Статус: {status}")
         st.divider()
 
-    v2_mode = st.radio("Тип:", ["Видео", "Фото"], horizontal=True)
-    v2_file = st.file_uploader(f"Файл", type=['mp4','mov','jpg','png'], key="uv2")
+    v2_mode = st.radio("Режим:", ["Видео", "Фото"], horizontal=True)
+    v2_file = st.file_uploader(f"Выберите файл", type=['mp4','mov','jpg','png'], key="uv2")
     if st.button("🚀 Запустить V2", use_container_width=True):
         if v2_file:
-            with st.spinner("Запуск..."):
+            with st.spinner("Запуск воркфлоу..."):
                 loop = asyncio.new_event_loop()
                 url = loop.run_until_complete(upload_to_rh(v2_file.getvalue(), v2_file.name))
                 if v2_mode == "Фото":
@@ -156,46 +160,36 @@ with tab2:
                     st.rerun()
 
 with tab3:
-    st.header("📱 Референсы TikTok (No Watermark)")
-    if st.button("🔄 Обновить ленту", use_container_width=True):
-        with st.spinner("Скрапинг..."):
+    st.header("📱 TikTok References (No Watermark)")
+    if st.button("🔄 Обновить ленту референсов", use_container_width=True):
+        with st.spinner("Загрузка из Apify..."):
             try:
                 runs = apify_client.actor(SCRAPER_ID).runs().list(limit=1, desc=True)
                 if runs.items:
                     items = apify_client.dataset(runs.items[0]['defaultDatasetId']).list_items().items
-                    
-                    if not items:
-                        st.warning("Скрапер сработал, но список видео пуст.")
-                    else:
-                        st.success(f"Найдено видео: {len(items)}")
-                        # Создаем колонки только если есть элементы
+                    if items:
                         cols = st.columns(2)
                         loop = asyncio.new_event_loop()
-                        
                         for i, item in enumerate(items):
                             orig = item.get('webVideoUrl') or item.get('url')
-                            # Безопасное обращение к колонкам
                             with cols[i % 2]:
                                 with st.container(border=True):
                                     direct = loop.run_until_complete(get_tiktok_mp4(orig))
-                                    
-                                    # Видео плеер
                                     if direct:
                                         st.video(direct)
-                                        # Кнопка скачивания
-                                        st.markdown(f'''
+                                        # Используем st.html вместо st.markdown для кнопок
+                                        st.html(f'''
                                             <a href="{direct}" target="_blank" style="text-decoration:none;">
-                                                <div style="background-color:#ff4b4b;color:white;padding:10px;text-align:center;border-radius:5px;">
-                                                    📥 Скачать MP4
+                                                <div style="background-color:#ff4b4b; color:white; padding:10px; text-align:center; border-radius:5px; font-family:sans-serif; font-weight:bold;">
+                                                    📥 СКАЧАТЬ MP4
                                                 </div>
                                             </a>
-                                        ''', unsafe_allow_content_html=True)
+                                        ''')
                                     else:
                                         st.video(orig)
-                                        st.info("Прямая ссылка недоступна")
-                                        
-                                    st.write(f"🔗 [Оригинал]({orig})")
-                else:
-                    st.error("Запуски скрапера не найдены.")
+                                        st.warning("Ссылка без вотермарки не найдена")
+                                    st.write(f"🔗 [TikTok Link]({orig})")
+                    else: st.warning("Список видео пуст")
+                else: st.error("Скрапер еще не запускался")
             except Exception as e:
-                st.error(f"Ошибка при получении данных: {e}")
+                st.error(f"Ошибка скрапера: {e}")
