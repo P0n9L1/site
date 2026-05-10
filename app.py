@@ -155,23 +155,47 @@ with tab2:
                     st.query_params.task = task_id
                     st.rerun()
 
-with cols[i % 2]:
-    with st.container(border=True):
-        direct = loop.run_until_complete(get_tiktok_mp4(orig))
-        
-        # Плеер показываем в любом случае (Streamlit сам обработает пустую ссылку)
-        st.video(direct if direct else orig)
-        
-        # А вот кнопку скачивания рисуем ТОЛЬКО если есть прямая ссылка
-        if direct:
-            st.markdown(f'''
-                <a href="{direct}" target="_blank" style="text-decoration:none;">
-                    <div style="background-color:#ff4b4b;color:white;padding:10px;text-align:center;border-radius:5px;">
-                        📥 Скачать без вотермарки
-                    </div>
-                </a>
-            ''', unsafe_allow_content_html=True)
-        else:
-            st.warning("Прямая ссылка недоступна")
-            
-        st.write(f"🔗 [Оригинал]({orig})")
+with tab3:
+    st.header("📱 Референсы TikTok (No Watermark)")
+    if st.button("🔄 Обновить ленту", use_container_width=True):
+        with st.spinner("Скрапинг..."):
+            try:
+                runs = apify_client.actor(SCRAPER_ID).runs().list(limit=1, desc=True)
+                if runs.items:
+                    items = apify_client.dataset(runs.items[0]['defaultDatasetId']).list_items().items
+                    
+                    if not items:
+                        st.warning("Скрапер сработал, но список видео пуст.")
+                    else:
+                        st.success(f"Найдено видео: {len(items)}")
+                        # Создаем колонки только если есть элементы
+                        cols = st.columns(2)
+                        loop = asyncio.new_event_loop()
+                        
+                        for i, item in enumerate(items):
+                            orig = item.get('webVideoUrl') or item.get('url')
+                            # Безопасное обращение к колонкам
+                            with cols[i % 2]:
+                                with st.container(border=True):
+                                    direct = loop.run_until_complete(get_tiktok_mp4(orig))
+                                    
+                                    # Видео плеер
+                                    if direct:
+                                        st.video(direct)
+                                        # Кнопка скачивания
+                                        st.markdown(f'''
+                                            <a href="{direct}" target="_blank" style="text-decoration:none;">
+                                                <div style="background-color:#ff4b4b;color:white;padding:10px;text-align:center;border-radius:5px;">
+                                                    📥 Скачать MP4
+                                                </div>
+                                            </a>
+                                        ''', unsafe_allow_content_html=True)
+                                    else:
+                                        st.video(orig)
+                                        st.info("Прямая ссылка недоступна")
+                                        
+                                    st.write(f"🔗 [Оригинал]({orig})")
+                else:
+                    st.error("Запуски скрапера не найдены.")
+            except Exception as e:
+                st.error(f"Ошибка при получении данных: {e}")
